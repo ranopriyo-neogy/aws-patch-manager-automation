@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template to enable or disable patching based on the Backup status
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment (e.g., lab, dev, qa, stg, uat, prd)
+    AllowedValues:
+      - lab
+      - dev
+      - qa
+      - stg
+      - uat
+      - prd
+      - sit
+
+  TargetOperatingSystem:
+    Type: String
+    Description: The operating system for the patch baseline.
+    AllowedValues:
+      - amazonlinux
+      - ubuntu
+      - windows
+
+  BackupVaultName:
+    Type: String
+    Description: Name of the AWS Backup vault
+
+  BackupJobThreshold:
+    Type: Number
+    Description: Number of completed backup jobs expected when the lambda checks.
+    Default: 3
+
+  MaintenanceWindowName:
+    Type: String
+    Description: Name of the maintenance window
+
+  CheckBackUpJobAndEnableMaintenanceWindow:
+    Type: String
+    Description: Cron schedule for enabling maintenance window (e.g., cron(0 22 27 1,4,7,10 ? *)) in local time
+    Default: "cron(0 22 27 1,4,7,10 ? *)"
+
+  DisableMaintenanceWindow:
+    Type: String
+    Description: Cron schedule for disabling maintenance window (e.g., cron(0 23 27 1,4,7,10 ? *)) in local time
+    Default: "cron(0 23 27 1,4,7,10 ? *)"
+
+Mappings:
+  RegionTimeZones:
+    us-east-1: { TimeZone: "America/New_York" }
+    us-east-2: { TimeZone: "America/New_York" }
+    us-west-1: { TimeZone: "America/Los_Angeles" }
+    us-west-2: { TimeZone: "America/Los_Angeles" }
+    eu-west-1: { TimeZone: "Europe/London" }
+    eu-west-2: { TimeZone: "Europe/London" }
+    eu-west-3: { TimeZone: "Europe/Paris" }
+    eu-central-1: { TimeZone: "Europe/Berlin" }
+    ap-southeast-1: { TimeZone: "Asia/Singapore" }
+    ap-southeast-2: { TimeZone: "Australia/Sydney" }
+    ap-northeast-1: { TimeZone: "Asia/Tokyo" }
+    ap-northeast-2: { TimeZone: "Asia/Seoul" }
+    ap-south-1: { TimeZone: "Asia/Kolkata" }
+    sa-east-1: { TimeZone: "America/Sao_Paulo" }
+    ca-central-1: { TimeZone: "America/Toronto" }
+    me-south-1: { TimeZone: "Asia/Dubai" }
+    af-south-1: { TimeZone: "Africa/Johannesburg" }
+
+Resources:
+  EventSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "EventSchedulerRole-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "EventSchedulerInvokeLambdaPolicy-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt EnableMaintWinLambda.Arn
+                  - !GetAtt DisableMaintWinLambda.Arn
+
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "LambdaExecutionRole-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "LambdaPolicy-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - backup:ListBackupJobs
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ssm:DescribeMaintenanceWindows
+                  - ssm:UpdateMaintenanceWindow
+                Resource: "*"
+
+  # Enable Maintenance Window Lambda Function
+  EnableMaintWinLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "EnableMaintenanceWindowLambda-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 600 # 10 minutes
+      Environment:
+        Variables:
+          BACKUP_VAULT_NAME: !Ref BackupVaultName
+          MAINTENANCE_WINDOW_NAME: !Ref MaintenanceWindowName
+          BACKUP_JOB_THRESHOLD: !Ref BackupJobThreshold
+      Code:
+        ZipFile: |
+          import boto3
+          import datetime
+          from datetime import datetime, timedelta
+          import os
+          from zoneinfo import ZoneInfo
+
+          def get_local_time():
+              region = boto3.Session().region_name
+              region_timezones = {
+                  "us-east-1": "America/New_York",
+                  "us-west-1": "America/Los_Angeles",
+                  "us-west-2": "America/Los_Angeles",
+                  "eu-west-1": "Europe/London",
+                  "eu-central-1": "Europe/Berlin",
+                  "ap-southeast-1": "Asia/Singapore",
+                  "ap-northeast-1": "Asia/Tokyo",
+                  "ap-south-1": "Asia/Kolkata",
+                  "sa-east-1": "America/Sao_Paulo",
+                  "ca-central-1": "America/Toronto",
+                  "me-south-1": "Asia/Dubai",
+                  "af-south-1": "Africa/Johannesburg"
+                }
+              timezone = region_timezones.get(region, "UTC")
+              return datetime.now(ZoneInfo(timezone))
+
+          def list_backup_jobs(backup_vault_name):
+              client = boto3.client('backup')
+              backup_jobs = []
+              paginator = client.get_paginator('list_backup_jobs')
+              utc_time = datetime.utcnow()
+              local_time = get_local_time()
+              for page in paginator.paginate(ByBackupVaultName=backup_vault_name, ByCreatedAfter=local_time.replace(hour=0, minute=0, second=0, microsecond=0), ByState='COMPLETED'):
+                  backup_jobs.extend(page['BackupJobs'])
+              return backup_jobs
+
+          def enable_maintenance_window_by_name(window_name, status):
+              ssm_client = boto3.client('ssm')
+              try:
+                  response = ssm_client.describe_maintenance_windows()
+                  window_id = next((window['WindowId'] for window in response['WindowIdentities'] if window['Name'] == window_name), None)
+                  if not window_id:
+                      print(f"Maintenance window '{window_name}' not found.")
+                      return
+                  ssm_client.update_maintenance_window(WindowId=window_id, Enabled=status)
+                  print(f"Maintenance window '{window_name}' (ID: {window_id}) is now {'enabled' if status else 'disabled'}.")
+              except Exception as e:
+                  print(f"Error: {e}")
+
+          def lambda_handler(event, context):
+              backup_vault_name = os.environ['BACKUP_VAULT_NAME']
+              maintenance_window_name = os.environ['MAINTENANCE_WINDOW_NAME']
+              backup_job_threshold = int(os.environ.get('BACKUP_JOB_THRESHOLD', 3))
+              backup_jobs = list_backup_jobs(backup_vault_name)
+              print(f"Count of completed backup jobs in '{backup_vault_name}': {len(backup_jobs)}")
+              enable_maintenance_window_by_name(maintenance_window_name, len(backup_jobs) == backup_job_threshold)
+
+  # Disable Maintenance Window Lambda Function
+  DisableMaintWinLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "DisableMaintenanceWindowLambda-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 600 # 10 minutes
+      Environment:
+        Variables:
+          MAINTENANCE_WINDOW_NAME: !Ref MaintenanceWindowName
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+
+          def disable_maintenance_window_by_name(window_name, status):
+              ssm_client = boto3.client('ssm')
+              try:
+                  response = ssm_client.describe_maintenance_windows()
+                  window_id = next(
+                      (window['WindowId'] for window in response['WindowIdentities'] if window['Name'] == window_name), 
+                      None
+                  )
+                  if not window_id:
+                      print(f"Maintenance window '{window_name}' not found.")
+                      return
+                  ssm_client.update_maintenance_window(
+                      WindowId=window_id,
+                      Enabled=status
+                  )
+                  print(f"Maintenance window '{window_name}' (ID: {window_id}) is now disabled.")
+              except Exception as e:
+                  print(f"Error: {e}")
+
+          def lambda_handler(event, context):
+              maintenance_window_name = os.environ['MAINTENANCE_WINDOW_NAME']
+              disable_maintenance_window_by_name(maintenance_window_name, False)
+
+  # Event Scheduler - Enable Maintenance Window Schedule
+  EnableMaintWinSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "EnableMaintWinLambdaScheduledRule-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      ScheduleExpression: !Ref CheckBackUpJobAndEnableMaintenanceWindow
+      ScheduleExpressionTimezone:
+        !FindInMap [RegionTimeZones, !Ref "AWS::Region", TimeZone]
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt EnableMaintWinLambda.Arn
+        RoleArn: !GetAtt EventSchedulerRole.Arn
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 3600
+          MaximumRetryAttempts: 0
+
+  # Event Scheduler - Disable Maintenance Window Schedule
+  DisableMaintWinSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "DisableMaintWinLambdaScheduledRule-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      ScheduleExpression: !Ref DisableMaintenanceWindow
+      ScheduleExpressionTimezone:
+        !FindInMap [RegionTimeZones, !Ref "AWS::Region", TimeZone]
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DisableMaintWinLambda.Arn
+        RoleArn: !GetAtt EventSchedulerRole.Arn
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 3600
+          MaximumRetryAttempts: 0
+
+  # Lambda Permissions for Event Scheduler
+  EnableLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref EnableMaintWinLambda
+      Principal: scheduler.amazonaws.com
+      SourceArn: !GetAtt EnableMaintWinSchedule.Arn
+
+  DisableLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DisableMaintWinLambda
+      Principal: scheduler.amazonaws.com
+      SourceArn: !GetAtt DisableMaintWinSchedule.Arn

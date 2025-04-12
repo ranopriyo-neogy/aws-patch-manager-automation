@@ -1,0 +1,332 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AWS Backup and SSM Patch Baseline StackSet
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment (e.g., lab, dev, qa, stg, uat, prd)
+    AllowedValues:
+      - lab
+      - dev
+      - qa
+      - stg
+      - uat
+      - prd
+      - sit
+
+  BackupVaultNamePrefix:
+    Type: String
+    Description: Name of the AWS Backup Vault. This name will be appended with OS, Env and Region.
+    Default: "backup-vault"
+
+  BackupSchedule:
+    Type: String
+    Description: Cron schedule for the backup rule in EST.
+    Default: "cron(0 19 ? * 7 *)"
+  
+  BackupStartWindowMinutes:
+    Type: Number
+    Default: 60
+    Description: "The amount of time in minutes before a backup job must start."
+
+  BackupCompletionWindowMinutes:
+    Type: Number
+    Default: 120
+    Description: "The amount of time in minutes before a backup job must complete."
+
+  TargetOperatingSystem:
+    Type: String
+    Description: The operating system for the patch baseline.
+    AllowedValues:
+      - amazonlinux
+      - ubuntu
+      - windows
+  
+  ScanRebootOption:
+    Type: String
+    Description: Instance Reboot after patch Scan
+    Default: "NoReboot"
+    AllowedValues:
+      - "RebootIfNeeded"
+      - "NoReboot"
+
+  InstallRebootOption:
+    Type: String
+    Description: Instance Reboot after patch Install
+    Default: "NoReboot"
+    AllowedValues:
+      - "RebootIfNeeded"
+      - "NoReboot"
+  
+  ApproveAfterDays:
+    Type: Number
+    Default: 7
+    Description: Number of days after release before a patch is automatically approved.
+
+  MaintenanceWindowDuration:
+    Type: Number
+    Default: 3
+    Description: "The duration of the maintenance window in hours."
+
+  MaintenanceWindowCutoff:
+    Type: Number
+    Default: 1
+    Description: "The number of hours before the end of the maintenance window that Systems Manager stops scheduling new tasks."
+
+  SupportedUbuntuVersions:
+    Type: CommaDelimitedList
+    Description: (Optional) List of Ubuntu product versions
+    Default: "Ubuntu14.04,Ubuntu16.04,Ubuntu18.04,Ubuntu20.04,Ubuntu20.10,Ubuntu22.04,Ubuntu23,Ubuntu23.04,Ubuntu23.10,Ubuntu24,Ubuntu24.04,Ubuntu24.10"
+
+  SupportedWindowsVersions:
+    Type: CommaDelimitedList
+    Description: (Optional) List of Windows product versions
+    Default: "WindowsServer2012,WindowsServer2016,WindowsServer2019,WindowsServer2022"
+
+  SupportedAmazonLinuxVersions:
+    Type: CommaDelimitedList
+    Description: (Optional) List of Amazon Linux product versions
+    Default: "AmazonLinux2012.03,AmazonLinux2012.09,AmazonLinux2018.03"
+
+  RetentionDays:
+    Type: Number
+    Description: Number of days to retain backups.
+    Default: 7
+
+  S3Bucket:
+    Type: String
+    Description: "S3 Bucket for storing scan and install logs"
+
+  MaintenanceWindowCronSchedule:
+    Type: String
+    Description: "Cron schedule for maintenance window (UTC-based cron)"
+    Default: "cron(0 23 ? * 7 *)" # Default to 11 PM UTC, dynamically adjusted via timezone
+
+Mappings:
+  RegionTimeZones:
+    us-east-1: { TimeZone: "America/New_York" }
+    us-east-2: { TimeZone: "America/New_York" }
+    us-west-1: { TimeZone: "America/Los_Angeles" }
+    us-west-2: { TimeZone: "America/Los_Angeles" }
+    eu-west-1: { TimeZone: "Europe/London" }
+    eu-west-2: { TimeZone: "Europe/London" }
+    eu-west-3: { TimeZone: "Europe/Paris" }
+    eu-central-1: { TimeZone: "Europe/Berlin" }
+    ap-southeast-1: { TimeZone: "Asia/Singapore" }
+    ap-southeast-2: { TimeZone: "Australia/Sydney" }
+    ap-northeast-1: { TimeZone: "Asia/Tokyo" }
+    ap-northeast-2: { TimeZone: "Asia/Seoul" }
+    ap-south-1: { TimeZone: "Asia/Kolkata" }
+    sa-east-1: { TimeZone: "America/Sao_Paulo" }
+    ca-central-1: { TimeZone: "America/Toronto" }
+    me-south-1: { TimeZone: "Asia/Dubai" }
+    af-south-1: { TimeZone: "Africa/Johannesburg" }
+
+Conditions:
+  IsUbuntu: !Equals [!Ref TargetOperatingSystem, "ubuntu"]
+  IsWindows: !Equals [!Ref TargetOperatingSystem, "windows"]
+  IsAmazonLinux: !Equals [!Ref TargetOperatingSystem, "amazonlinux"]
+
+Resources:
+  AWSBackupDefaultServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "AWSBackupRole-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action: "sts:AssumeRole"
+            Principal:
+              Service: "backup.amazonaws.com"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+        - "arn:aws:iam::aws:policy/AWSBackupServiceRolePolicyForS3Backup"
+
+  BackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: !Sub "${BackupVaultNamePrefix}-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+
+  BackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub "backup_plan-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+        BackupPlanRule:
+          - RuleName: !Sub "pre-patch-backup-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: !Ref BackupSchedule
+            ScheduleExpressionTimezone:
+              !FindInMap [RegionTimeZones, !Ref "AWS::Region", TimeZone]
+            StartWindowMinutes: !Ref BackupStartWindowMinutes
+            CompletionWindowMinutes: !Ref BackupCompletionWindowMinutes
+            Lifecycle:
+              DeleteAfterDays: !Ref RetentionDays
+
+  BackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref BackupPlan
+      BackupSelection:
+        SelectionName: !Sub "backup_target_config-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+        IamRoleArn: !GetAtt AWSBackupDefaultServiceRole.Arn
+        Resources:
+          - "arn:aws:ec2:*:*:volume/*"
+          - "arn:aws:ec2:*:*:instance/*"
+        Conditions:
+          StringEquals:
+            - ConditionKey: aws:ResourceTag/env_id
+              ConditionValue: !Ref Environment
+            - ConditionKey: aws:ResourceTag/ToScan
+              ConditionValue: "true"
+            - ConditionKey: aws:ResourceTag/os
+              ConditionValue: !Ref TargetOperatingSystem
+
+  UbuntuPatchBaseline:
+    Condition: IsUbuntu
+    Type: AWS::SSM::PatchBaseline
+    Properties:
+      Name: !Sub "ubuntu-patch-baseline-${Environment}-${AWS::Region}"
+      Description: "Ubuntu Patch Baseline"
+      OperatingSystem: "UBUNTU"
+      DefaultBaseline: true
+      PatchGroups:
+        - !Sub "ubuntu-patch-group-${Environment}-${AWS::Region}"
+      ApprovalRules:
+        PatchRules:
+          - PatchFilterGroup:
+              PatchFilters:
+                - Key: "PRODUCT"
+                  Values: !Ref SupportedUbuntuVersions
+                - Key: "PRIORITY"
+                  Values: ["Required", "Important", "Standard"]
+                - Key: "SECTION"
+                  Values: ["All"]
+            ApproveAfterDays: !Ref ApproveAfterDays
+            ComplianceLevel: "INFORMATIONAL"
+            
+  AmazonLinuxPatchBaseline:
+    Condition: IsAmazonLinux
+    Type: AWS::SSM::PatchBaseline
+    Properties:
+      Name: !Sub "amazon-linux-patch-baseline-${Environment}-${AWS::Region}"
+      Description: "Patch Baseline for Amazon Linux"
+      OperatingSystem: "AMAZON_LINUX"
+      DefaultBaseline: true
+      PatchGroups:
+        - !Sub "amazon-linux-patch-group-${Environment}-${AWS::Region}"
+      ApprovalRules:
+        PatchRules:
+          - PatchFilterGroup:
+              PatchFilters:
+                - Key: "PRODUCT"
+                  Values: !Ref SupportedAmazonLinuxVersions
+                - Key: "CLASSIFICATION"
+                  Values: ["Security"]
+                - Key: "SEVERITY"
+                  Values: ["Critical", "Important", "Medium", "Low"]
+            ApproveAfterDays: !Ref ApproveAfterDays
+            ComplianceLevel: "INFORMATIONAL"
+
+  WindowsPatchBaseline:
+    Condition: IsWindows
+    Type: AWS::SSM::PatchBaseline
+    Properties:
+      Name: !Sub "windows-patch-baseline-${Environment}-${AWS::Region}"
+      Description: "Patch Baseline for Windows"
+      OperatingSystem: "WINDOWS"
+      DefaultBaseline: true
+      PatchGroups:
+        - !Sub "windows-patch-group-${Environment}-${AWS::Region}"
+      ApprovalRules:
+        PatchRules:
+          - PatchFilterGroup:
+              PatchFilters:
+                - Key: "PRODUCT"
+                  Values: !Ref SupportedWindowsVersions
+                - Key: "CLASSIFICATION"
+                  Values: ["SecurityUpdates", "CriticalUpdates"]
+                - Key: "MSRC_SEVERITY"
+                  Values: ["Critical", "Important", "Moderate", "Low"]
+            ApproveAfterDays: !Ref ApproveAfterDays
+            ComplianceLevel: "INFORMATIONAL"
+
+  SsmMaintenanceWindow:
+    Type: AWS::SSM::MaintenanceWindow
+    Properties:
+      Name: !Sub "maintenance-window-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      Description: "Maintenance Schedule for OS Scanning"
+      AllowUnassociatedTargets: false
+      Schedule: !Ref MaintenanceWindowCronSchedule
+      ScheduleTimezone:
+        !FindInMap [RegionTimeZones, !Ref "AWS::Region", TimeZone]
+      Duration: !Ref MaintenanceWindowDuration
+      Cutoff: !Ref MaintenanceWindowCutoff
+
+  SsmMaintenanceWindowTarget:
+    Type: AWS::SSM::MaintenanceWindowTarget
+    Properties:
+      WindowId: !Ref SsmMaintenanceWindow
+      Name: !Sub "maintenance-window-target-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      Description: "Maintenance window target"
+      ResourceType: "INSTANCE"
+      Targets:
+        - Key: "tag:env_id"
+          Values: [!Ref Environment]
+        - Key: "tag:ToScan"
+          Values: ["true"]
+        - Key: "tag:os"
+          Values: [!Ref TargetOperatingSystem]
+
+  SsmMaintenanceWindowTaskScan:
+    Type: AWS::SSM::MaintenanceWindowTask
+    Properties:
+      WindowId: !Ref SsmMaintenanceWindow
+      TaskArn: "AWS-RunPatchBaseline"
+      TaskType: "RUN_COMMAND"
+      TaskInvocationParameters:
+        MaintenanceWindowRunCommandParameters:
+          Parameters:
+            Operation: ["Scan"]
+            RebootOption: [!Ref ScanRebootOption]
+          OutputS3BucketName: !Ref S3Bucket
+          OutputS3KeyPrefix: !Sub "${AWS::AccountId}-${TargetOperatingSystem}-${Environment}-${AWS::Region}-scanning"
+      Priority: 1
+      MaxConcurrency: "1"
+      MaxErrors: "1"
+      CutoffBehavior: "CANCEL_TASK"
+      Targets:
+        - Key: "WindowTargetIds"
+          Values:
+            - !Ref SsmMaintenanceWindowTarget
+
+  SsmMaintenanceWindowTaskInstall:
+    Type: AWS::SSM::MaintenanceWindowTask
+    Properties:
+      WindowId: !Ref SsmMaintenanceWindow
+      TaskArn: "AWS-RunPatchBaseline"
+      TaskType: "RUN_COMMAND"
+      TaskInvocationParameters:
+        MaintenanceWindowRunCommandParameters:
+          Parameters:
+            Operation: ["Install"]
+            RebootOption: [!Ref InstallRebootOption]
+          OutputS3BucketName: !Ref S3Bucket
+          OutputS3KeyPrefix: !Sub "${AWS::AccountId}-${TargetOperatingSystem}-${Environment}-${AWS::Region}-installing"
+      Priority: 2
+      MaxConcurrency: "1"
+      MaxErrors: "1"
+      CutoffBehavior: "CANCEL_TASK"
+      Targets:
+        - Key: "WindowTargetIds"
+          Values:
+            - !Ref SsmMaintenanceWindowTarget
+
+Outputs:
+  BackupVaultName:
+    Description: "Name of the Backup Vault"
+    Value: !Ref BackupVault
+  MaintenanceWindowName:
+    Description: "Name of the Maintenance Window"
+    Value: !Sub "maintenance-window-${TargetOperatingSystem}-${Environment}-${AWS::Region}"

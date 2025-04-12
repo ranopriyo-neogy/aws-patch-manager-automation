@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template to create central S3 Bucket for storing Patching logs
+
+Parameters:
+  PrincipalOrgID:
+    Type: String
+    Description: "The AWS Organization ID allowed to put objects in the bucket."
+    Default: "o-vea8mawl7w"
+
+  PatchingLogsBucketName:
+    Type: String
+    Default: "aws-mgt-patching-logs"
+    Description: "Name of the S3 bucket to store patching logs"
+
+  TargetOperatingSystem:
+    Type: String
+    Description: The operating system for the patch baseline.
+    AllowedValues:
+      - amazonlinux
+      - ubuntu
+      - windows
+
+  Environment:
+    Type: String
+    Description: Deployment environment (e.g., lab, dev, qa, stg, uat, prd)
+    AllowedValues:
+      - lab
+      - dev
+      - qa
+      - stg
+      - uat
+      - prd
+      - sit
+
+Resources:
+  PatchingLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: 
+        !Sub 
+          - "${PatchingLogsBucketName}-${TargetOperatingSystem}-${Environment}-${RandomGUID}"
+          - { RandomGUID: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  PatchingLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PatchingLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action:
+              - "s3:PutObject"
+            Resource:
+              - !Sub "arn:aws:s3:::${PatchingLogsBucket}"
+              - !Sub "arn:aws:s3:::${PatchingLogsBucket}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: "bucket-owner-full-control"
+          - Sid: "AllowIamRole"
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource: !Sub "arn:aws:s3:::${PatchingLogsBucket}/*"
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref PrincipalOrgID
+
+Outputs:
+  BucketName:
+    Description: "Name of the S3 bucket created"
+    Value: !Ref PatchingLogsBucket
