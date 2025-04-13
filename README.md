@@ -213,11 +213,11 @@ This template is suitable for centralized, compliant, and automated patch and ba
 
 ### Outputs
 
-| Output Name             | Description                     | Value                                            |
+| Output Name             | Description                      | Value                                             |
 |-------------------------|----------------------------------|--------------------------------------------------|
 | `BackupVaultName`       | Name of the created backup vault | `<Prefix>-<OS>-<Env>-<Region>`                   |
 | `MaintenanceWindowName` | Name of the maintenance window   | `maintenance-window-<OS>-<Env>-<Region>`         |
-
+| `PatchGroup`            | Name of the Patch Group          | `<OS>-patch-group<Env>-`                         |
 
 ## aws-monitoring-backup-stackset
 
