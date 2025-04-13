@@ -176,12 +176,10 @@ Resources:
           - "arn:aws:ec2:*:*:instance/*"
         Conditions:
           StringEquals:
-            - ConditionKey: aws:ResourceTag/env_id
-              ConditionValue: !Ref Environment
-            - ConditionKey: aws:ResourceTag/ToScan
+            - ConditionKey: aws:ResourceTag/PatchGroup
+              ConditionValue: !Sub "${TargetOperatingSystem}-patch-group-${Environment}"
+            - ConditionKey: aws:ResourceTag/ToBackupAndPatch
               ConditionValue: "true"
-            - ConditionKey: aws:ResourceTag/os
-              ConditionValue: !Ref TargetOperatingSystem
 
   UbuntuPatchBaseline:
     Condition: IsUbuntu
@@ -190,9 +188,8 @@ Resources:
       Name: !Sub "ubuntu-patch-baseline-${Environment}-${AWS::Region}"
       Description: "Ubuntu Patch Baseline"
       OperatingSystem: "UBUNTU"
-      DefaultBaseline: true
       PatchGroups:
-        - !Sub "ubuntu-patch-group-${Environment}-${AWS::Region}"
+        - !Sub "${TargetOperatingSystem}-patch-group-${Environment}"
       ApprovalRules:
         PatchRules:
           - PatchFilterGroup:
@@ -213,9 +210,8 @@ Resources:
       Name: !Sub "amazon-linux-patch-baseline-${Environment}-${AWS::Region}"
       Description: "Patch Baseline for Amazon Linux"
       OperatingSystem: "AMAZON_LINUX"
-      DefaultBaseline: true
       PatchGroups:
-        - !Sub "amazon-linux-patch-group-${Environment}-${AWS::Region}"
+        - !Sub "${TargetOperatingSystem}-patch-group-${Environment}"
       ApprovalRules:
         PatchRules:
           - PatchFilterGroup:
@@ -236,9 +232,8 @@ Resources:
       Name: !Sub "windows-patch-baseline-${Environment}-${AWS::Region}"
       Description: "Patch Baseline for Windows"
       OperatingSystem: "WINDOWS"
-      DefaultBaseline: true
       PatchGroups:
-        - !Sub "windows-patch-group-${Environment}-${AWS::Region}"
+        - !Sub "${TargetOperatingSystem}-patch-group-${Environment}"
       ApprovalRules:
         PatchRules:
           - PatchFilterGroup:
@@ -272,12 +267,10 @@ Resources:
       Description: "Maintenance window target"
       ResourceType: "INSTANCE"
       Targets:
-        - Key: "tag:env_id"
-          Values: [!Ref Environment]
-        - Key: "tag:ToScan"
+        - Key: "tag:PatchGroup"
+          Values: [!Sub "${TargetOperatingSystem}-patch-group-${Environment}"]
+        - Key: "tag:ToBackupAndPatch"
           Values: ["true"]
-        - Key: "tag:os"
-          Values: [!Ref TargetOperatingSystem]
 
   SsmMaintenanceWindowTaskScan:
     Type: AWS::SSM::MaintenanceWindowTask
@@ -330,3 +323,6 @@ Outputs:
   MaintenanceWindowName:
     Description: "Name of the Maintenance Window"
     Value: !Sub "maintenance-window-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+  PatchGroup:
+    Description: "Name of the Patch Group"
+    Value: !Sub "${TargetOperatingSystem}-patch-group-${Environment}"
