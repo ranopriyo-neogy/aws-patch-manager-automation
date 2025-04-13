@@ -89,7 +89,7 @@ The solution enables scheduled, automated patching of EC2 instances across the f
    - Ensure that the schedules are at least **2 hours apart** to allow for appropriate time management between backup and patching processes. The backup window is `2 hours` and maintainence window is `3 hours` 
    - The cron expression works specific to the region. For example if you schedule a cron for `8 PM` everyday for `us-east-1`, it will run `8 PM` specific to that region which is `8 PM EST`.
    - After obtaining the bucket name from the previous step-1 `aws-create-s3-stack`, run the `aws-backup-and-patch-stackset` as a stackset in the **child account** that has the EC2 instances to be patched.
-   - Copy the `BackupVaultName` and `MaintenanceWindowName` from the stackset output. This will be needed as inputs in `aws-monitoring-backup-stackset` stackset.
+   - Copy the `BackupVaultName`, `MaintenanceWindowName` and `PatchGroup` from the stackset output. `BackupVaultName` and `MaintenanceWindowName` will be needed as inputs in `aws-monitoring-backup-stackset` stackset where as `PatchGroup` is needed to tag the resources Ec2 and EBS volumes specific to that OS and Environment
 
 3. Run `aws-monitoring-backup-stackset` with inputs recorded in the step-2. Make sure to coordinate the cron schedules for lambda functions based on backup and patching tasks schedule. This ensures Maintenance Window is enabled after the back-up window completes with all anticipated back-up jobs in completed status. The Maintenance Window is disabled after the Maintenance Window is completed as per the cron schedule.
 
