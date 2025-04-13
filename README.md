@@ -75,7 +75,7 @@ The solution enables scheduled, automated patching of EC2 instances across the f
 
 **AWS Console**
 
-![](./img/resource-tags.png)
+![](./img/tags.png)
 
 ---
 
