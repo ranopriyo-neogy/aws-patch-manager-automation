@@ -39,9 +39,21 @@ The solution enables scheduled, automated patching of EC2 instances across the f
 }
 ```
 
-2. Make sure `Ec2` and `EBS` volumes are tagged as needed. The cloudformation template backup EBS volumes and Ec2 Instances which are tagged by `ToScan:true`, `env_id:dev` and `os:<your-os>`. Here `env_id` and `os` is provided as a parameter while deploying `aws-backup-and-patch-stackset.yaml` in later steps and can be specific to the environment.
+2. Make sure `Ec2` and `EBS` volumes are tagged as needed. The cloudformation template backsup `EBS` volumes and `Ec2` Instances which are tagged by `PatchGroup:<os>-patch-group-<env_id>` and `ToBackupAndPatch:true`. Here value for tag key `PatchGroup` can be viewed in the outputs generated after deploying `aws-backup-and-patch-stackset`.
+
+**Valid `PatchGroup` Tag Value**
+
+| Key              | Value                      |
+|------------------|----------------------------|
+| PatchGroup       | `os`-patch-group-`env_id`  |
+
+**Valid `ToBackupAndPatch` Tag Value**
+
+| Key              | Value |
+|------------------|-------|
+| ToBackupAndPatch | true  |
   
-**Valid `os` Tag Values**
+**Valid `os` Values**
 
 | Key | Value       |
 |-----|-------------|
@@ -49,7 +61,7 @@ The solution enables scheduled, automated patching of EC2 instances across the f
 | os  | ubuntu      |
 | os  | windows     |
 
-**Valid `env_id` Tag Values**
+**Valid `env_id` Values**
 
 | Key     | Value |
 |---------|-------|
@@ -60,12 +72,6 @@ The solution enables scheduled, automated patching of EC2 instances across the f
 | env_id  | uat   |
 | env_id  | prd   |
 | env_id  | sit   |
-
-**Valid `ToScan` Tag Value**
-
-| Key    | Value |
-|--------|-------|
-| ToScan | true  |
 
 **AWS Console**
 
