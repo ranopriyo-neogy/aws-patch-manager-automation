@@ -76,4 +76,7 @@ Resources:
 Outputs:
   BucketName:
     Description: "Name of the S3 bucket created"
-    Value: !Ref PatchingLogsBucket
+    Value: 
+      !Sub 
+        - "${PatchingLogsBucketName}-${TargetOperatingSystem}-${Environment}-${RandomGUID}"
+        - { RandomGUID: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
