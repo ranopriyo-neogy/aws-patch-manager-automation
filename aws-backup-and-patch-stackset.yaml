@@ -146,7 +146,7 @@ Resources:
   BackupVault:
     Type: AWS::Backup::BackupVault
     Properties:
-      BackupVaultName: !Sub "${BackupVaultNamePrefix}-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      BackupVaultName: !Sub "${BackupVaultNamePrefix}-${TargetOperatingSystem}-${Environment}"
 
   BackupPlan:
     Type: AWS::Backup::BackupPlan
@@ -250,7 +250,7 @@ Resources:
   SsmMaintenanceWindow:
     Type: AWS::SSM::MaintenanceWindow
     Properties:
-      Name: !Sub "maintenance-window-${TargetOperatingSystem}-${Environment}-${AWS::Region}"
+      Name: !Sub "maintenance-window-${TargetOperatingSystem}-${Environment}"
       Description: "Maintenance Schedule for OS Scanning"
       AllowUnassociatedTargets: false
       Schedule: !Ref MaintenanceWindowCronSchedule
