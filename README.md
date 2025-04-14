@@ -221,11 +221,11 @@ This template is suitable for centralized, compliant, and automated patch and ba
 
 ## aws-monitoring-backup-stackset
 
-This CloudFormation template automates the management of maintenance windows based on the status of AWS Backup jobs. It defines resources for creating IAM roles, Lambda functions, and event schedules that enable or disable maintenance windows depending on the number of successful backup jobs completed within a specified backup vault. The template includes:
+This CloudFormation template automates the management of maintenance windows based on the status of AWS Backup jobs. It defines resources for creating IAM roles, Lambda functions, and event schedules that enable or disable maintenance windows depending on the total job executed is equal to total jobs completed in the `LookbackHours` timeframe. This assumes that there is a valid status of the backup job after the backup window is over. The template includes:
 
 - Parameters to define deployment environment, operating system, backup vault, and schedules for enabling or disabling maintenance windows.
 
-- Lambda Functions to check the number of completed backup jobs and enable or disable the maintenance window based on that count.
+- Lambda Functions to check the status of completed backup jobs comparing the count with the count of all back-up jobs for the timeframe and enable or disable the maintenance window based on that count. Basically, it ensures the total job executed is equal to the total jobs completed in the `LookbackHours` timeframe.
 
 - Event Scheduler rules to trigger the Lambda functions at specified times, supporting flexible time zones based on the region.
 
@@ -240,7 +240,7 @@ This CloudFormation template automates the management of maintenance windows bas
 | Environment                               | String | Deployment environment.                                                     | lab, dev, qa, stg, uat, prd, sit           |
 | TargetOperatingSystem                     | String | Operating system for the patch baseline.                                    | amazonlinux, ubuntu, windows              |
 | BackupVaultName                           | String | Name of the AWS Backup vault.                                               | N/A                                       |
-| BackupJobThreshold                        | Number | Number of completed backup jobs required to enable patching.                | Default: 3                                |
+| LookbackHours                             | Number | Number of hours to look back when evaluating backup job status.             | Default: 3                                |
 | MaintenanceWindowName                     | String | Name of the AWS SSM Maintenance Window.                                     | N/A                                       |
 | CheckBackUpJobAndEnableMaintenanceWindow  | String | Cron expression for enabling patching based on backup status (local time).  | Default: cron(0 22 27 1,4,7,10 ? *)        |
 | DisableMaintenanceWindow                  | String | Cron expression for disabling patching after the maintenance window.        | Default: cron(0 23 27 1,4,7,10 ? *)        |
