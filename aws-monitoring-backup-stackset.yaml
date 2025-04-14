@@ -26,11 +26,6 @@ Parameters:
     Type: String
     Description: Name of the AWS Backup vault
 
-  BackupJobThreshold:
-    Type: Number
-    Description: Number of completed backup jobs expected when the lambda checks.
-    Default: 3
-
   MaintenanceWindowName:
     Type: String
     Description: Name of the maintenance window
@@ -44,6 +39,11 @@ Parameters:
     Type: String
     Description: Cron schedule for disabling maintenance window (e.g., cron(0 23 27 1,4,7,10 ? *)) in local time
     Default: "cron(0 23 27 1,4,7,10 ? *)"
+
+  LookbackHours:
+    Type: Number
+    Default: 3
+    Description: Number of hours to look back when evaluating backup job status.
 
 Mappings:
   RegionTimeZones:
@@ -135,7 +135,7 @@ Resources:
         Variables:
           BACKUP_VAULT_NAME: !Ref BackupVaultName
           MAINTENANCE_WINDOW_NAME: !Ref MaintenanceWindowName
-          BACKUP_JOB_THRESHOLD: !Ref BackupJobThreshold
+          LOOKBACK_HOURS: !Ref LookbackHours
       Code:
         ZipFile: |
           import boto3
@@ -145,54 +145,73 @@ Resources:
           from zoneinfo import ZoneInfo
 
           def get_local_time():
-              region = boto3.Session().region_name
-              region_timezones = {
-                  "us-east-1": "America/New_York",
-                  "us-west-1": "America/Los_Angeles",
-                  "us-west-2": "America/Los_Angeles",
-                  "eu-west-1": "Europe/London",
-                  "eu-central-1": "Europe/Berlin",
-                  "ap-southeast-1": "Asia/Singapore",
-                  "ap-northeast-1": "Asia/Tokyo",
-                  "ap-south-1": "Asia/Kolkata",
-                  "sa-east-1": "America/Sao_Paulo",
-                  "ca-central-1": "America/Toronto",
-                  "me-south-1": "Asia/Dubai",
-                  "af-south-1": "Africa/Johannesburg"
-                }
-              timezone = region_timezones.get(region, "UTC")
-              return datetime.now(ZoneInfo(timezone))
+            region = boto3.Session().region_name
+            region_timezones = {
+                "us-east-1": "America/New_York",
+                "us-west-1": "America/Los_Angeles",
+                "us-west-2": "America/Los_Angeles",
+                "eu-west-1": "Europe/London",
+                "eu-central-1": "Europe/Berlin",
+                "ap-southeast-1": "Asia/Singapore",
+                "ap-northeast-1": "Asia/Tokyo",
+                "ap-south-1": "Asia/Kolkata",
+                "sa-east-1": "America/Sao_Paulo",
+                "ca-central-1": "America/Toronto",
+                "me-south-1": "Asia/Dubai",
+                "af-south-1": "Africa/Johannesburg"
+            }
+            timezone = region_timezones.get(region, "UTC")
+            return datetime.now(ZoneInfo(timezone))
 
-          def list_backup_jobs(backup_vault_name):
-              client = boto3.client('backup')
-              backup_jobs = []
-              paginator = client.get_paginator('list_backup_jobs')
-              utc_time = datetime.utcnow()
-              local_time = get_local_time()
-              for page in paginator.paginate(ByBackupVaultName=backup_vault_name, ByCreatedAfter=local_time.replace(hour=0, minute=0, second=0, microsecond=0), ByState='COMPLETED'):
-                  backup_jobs.extend(page['BackupJobs'])
-              return backup_jobs
+          def list_recent_backup_jobs(backup_vault_name, lookback_hours=3):
+            client = boto3.client('backup')
+            paginator = client.get_paginator('list_backup_jobs')
+            recent_jobs = []
+
+            local_time = get_local_time()
+            lookback_start = local_time - timedelta(hours=lookback_hours)
+
+            for page in paginator.paginate(
+                ByBackupVaultName=backup_vault_name,
+                ByCreatedAfter=lookback_start
+            ):
+                recent_jobs.extend(page['BackupJobs'])
+
+            return recent_jobs
 
           def enable_maintenance_window_by_name(window_name, status):
-              ssm_client = boto3.client('ssm')
-              try:
-                  response = ssm_client.describe_maintenance_windows()
-                  window_id = next((window['WindowId'] for window in response['WindowIdentities'] if window['Name'] == window_name), None)
-                  if not window_id:
-                      print(f"Maintenance window '{window_name}' not found.")
-                      return
-                  ssm_client.update_maintenance_window(WindowId=window_id, Enabled=status)
-                  print(f"Maintenance window '{window_name}' (ID: {window_id}) is now {'enabled' if status else 'disabled'}.")
-              except Exception as e:
-                  print(f"Error: {e}")
+            ssm_client = boto3.client('ssm')
+            try:
+                response = ssm_client.describe_maintenance_windows()
+                window_id = next((w['WindowId'] for w in response['WindowIdentities'] if w['Name'] == window_name), None)
+                if not window_id:
+                    print(f"Maintenance window '{window_name}' not found.")
+                    return
+
+                ssm_client.update_maintenance_window(WindowId=window_id, Enabled=status)
+                print(f"Maintenance window '{window_name}' is now {'ENABLED' if status else 'DISABLED'}.")
+            except Exception as e:
+                print(f"Error updating maintenance window: {e}")
 
           def lambda_handler(event, context):
-              backup_vault_name = os.environ['BACKUP_VAULT_NAME']
-              maintenance_window_name = os.environ['MAINTENANCE_WINDOW_NAME']
-              backup_job_threshold = int(os.environ.get('BACKUP_JOB_THRESHOLD', 3))
-              backup_jobs = list_backup_jobs(backup_vault_name)
-              print(f"Count of completed backup jobs in '{backup_vault_name}': {len(backup_jobs)}")
-              enable_maintenance_window_by_name(maintenance_window_name, len(backup_jobs) == backup_job_threshold)
+            backup_vault_name = os.environ['BACKUP_VAULT_NAME']
+            maintenance_window_name = os.environ['MAINTENANCE_WINDOW_NAME']
+            lookback_hours = int(os.environ.get('LOOKBACK_HOURS', 3))
+
+            print(f"Checking backup jobs from the past {lookback_hours} hours...")
+
+            jobs = list_recent_backup_jobs(backup_vault_name, lookback_hours)
+            total_jobs = len(jobs)
+            completed_jobs = sum(1 for job in jobs if job['State'] == 'COMPLETED')
+
+            print(f"Found {total_jobs} total jobs, {completed_jobs} completed jobs.")
+
+            if total_jobs > 0 and total_jobs == completed_jobs:
+                print("All backup jobs completed successfully. Enabling maintenance window.")
+                enable_maintenance_window_by_name(maintenance_window_name, True)
+            else:
+                print("Not all backup jobs are complete. Disabling maintenance window.")
+                enable_maintenance_window_by_name(maintenance_window_name, False)
 
   # Disable Maintenance Window Lambda Function
   DisableMaintWinLambda:
